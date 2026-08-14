@@ -1,0 +1,95 @@
+{
+  "name": "muqi-task",
+  "displayName": "Muqi Task",
+  "description": "Muqi Task 任务看板，数据持久化到本机 SQLite。",
+  "version": "0.3.157",
+  "publisher": "local-test",
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:cursorTaskboard.main",
+    "onCommand:cursorTaskboard.open",
+    "onCommand:cursorTaskboard.openQuery",
+    "onCommand:cursorTaskboard.toggleLocale",
+    "onCommand:cursorTaskboard.openSettings"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cursor-taskboard",
+          "title": "Muqi Task",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "cursor-taskboard": [
+        {
+          "type": "webview",
+          "id": "cursorTaskboard.main",
+          "name": "%cursorTaskboard.view.name%"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "cursorTaskboard.open",
+        "title": "Muqi Task: 打开议题看板",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "cursorTaskboard.openQuery",
+        "title": "Muqi Task: 打开查询页面",
+        "icon": "$(layout-sidebar-right)"
+      },
+      {
+        "command": "cursorTaskboard.openSettings",
+        "title": "%cursorTaskboard.command.openSettings%",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "cursorTaskboard.toggleLocale",
+        "title": "%cursorTaskboard.command.toggleLocale%",
+        "icon": "$(globe)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "cursorTaskboard.openSettings",
+          "when": "view == cursorTaskboard.main",
+          "group": "navigation@1"
+        },
+        {
+          "command": "cursorTaskboard.toggleLocale",
+          "when": "view == cursorTaskboard.main",
+          "group": "navigation@2"
+        },
+        {
+          "command": "cursorTaskboard.openQuery",
+          "when": "view == cursorTaskboard.main",
+          "group": "navigation@3"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "package": "node scripts/package.js",
+    "install:vsix": "node scripts/install.js",
+    "install:remote": "node scripts/install.js --remote"
+  },
+  "dependencies": {
+    "sql.js": "^1.14.1"
+  }
+}

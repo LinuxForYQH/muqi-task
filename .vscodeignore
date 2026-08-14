@@ -1,0 +1,9 @@
+.vscode/**
+.git/**
+**/.DS_Store
+*.vsix
+releases/**
+scripts/**
+**/*.md
+!README.md
+!skills/**/*.md
