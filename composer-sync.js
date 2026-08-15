@@ -293,18 +293,42 @@ function transcriptMentionsIssue(filePath, identifier, title) {
 }
 
 /**
- * Bound threadId 可能是从未发送的空草稿（UI 标题为 New Agent）。
- * 远程 agent-transcripts 里才有真正聊过的会话。
+ * Transcript must mention this issue's identifier / title; otherwise it belongs to someone else.
+ * @param {string} threadId
+ * @param {string} identifier
+ * @param {string} title
+ */
+function threadBelongsToIssue(threadId, identifier, title) {
+  const file = composerTranscriptPath(threadId);
+  if (!file) return false;
+  return transcriptMentionsIssue(file, identifier, title);
+}
+
+/**
+ * Bound threadId 可能是从未发送的空草稿（UI 标题为 New Agent），
+ * 或被误绑到其他议题的会话。只有 transcript 明确提到本议题时才沿用。
  * @param {{ threadId?: string | null, identifier?: string, title?: string }} issue
+ * @param {{ occupiedThreadIds?: Iterable<string> }} [options]
  * @returns {string}
  */
-function resolveComposerIdForIssue(issue) {
+function resolveComposerIdForIssue(issue, options = {}) {
   const bound = String(issue?.threadId || "").trim();
-  if (bound && composerHasTranscript(bound)) return bound;
-
   const identifier = String(issue?.identifier || "").trim();
   const title = String(issue?.title || "").trim();
-  if (!identifier && !title) return COMPOSER_UUID_RE.test(bound) ? bound : "";
+  const occupied = new Set(
+    [...(options.occupiedThreadIds || [])].map((item) => String(item || "").trim()).filter(Boolean),
+  );
+
+  if (
+    bound &&
+    !occupied.has(bound) &&
+    composerHasTranscript(bound) &&
+    threadBelongsToIssue(bound, identifier, title)
+  ) {
+    return bound;
+  }
+
+  if (!identifier && !title) return "";
 
   /** @type {{ id: string, mtime: number } | null} */
   let best = null;
@@ -317,7 +341,7 @@ function resolveComposerIdForIssue(issue) {
     }
     for (const name of names) {
       if (!COMPOSER_UUID_RE.test(name)) continue;
-      if (name === bound) continue;
+      if (occupied.has(name)) continue;
       const file = path.join(root, name, `${name}.jsonl`);
       if (!fs.existsSync(file)) continue;
       if (!transcriptMentionsIssue(file, identifier, title)) continue;
@@ -331,7 +355,55 @@ function resolveComposerIdForIssue(issue) {
     }
   }
   if (best) return best.id;
-  return COMPOSER_UUID_RE.test(bound) ? bound : "";
+  // 空草稿：仅在未被其他议题占用、且本地还没有 transcript 时保留绑定。
+  if (bound && COMPOSER_UUID_RE.test(bound) && !occupied.has(bound) && !composerHasTranscript(bound)) {
+    return bound;
+  }
+  return "";
+}
+
+/**
+ * Rebind issues whose threadId is shared or does not belong to them.
+ * @param {{ listIssues: Function, updateIssue: Function }} db
+ * @returns {Array<{ identifier: string, from: string, to: string }>}
+ */
+function repairIssueThreadBindings(db) {
+  const issues = typeof db.listIssues === "function" ? db.listIssues() : [];
+  /** @type {Map<string, string>} */
+  const desired = new Map();
+  const claimed = new Set();
+
+  for (const issue of issues) {
+    const bound = String(issue.threadId || "").trim();
+    if (bound && threadBelongsToIssue(bound, issue.identifier, issue.title) && !claimed.has(bound)) {
+      desired.set(issue.id, bound);
+      claimed.add(bound);
+    }
+  }
+
+  for (const issue of issues) {
+    if (desired.has(issue.id)) continue;
+    const resolved = resolveComposerIdForIssue(issue, { occupiedThreadIds: claimed });
+    if (resolved && !claimed.has(resolved)) {
+      desired.set(issue.id, resolved);
+      claimed.add(resolved);
+    }
+  }
+
+  /** @type {Array<{ identifier: string, from: string, to: string }>} */
+  const changes = [];
+  for (const issue of issues) {
+    const prev = String(issue.threadId || "").trim();
+    const next = desired.get(issue.id) || "";
+    if (next === prev) continue;
+    db.updateIssue(issue.id, { threadId: next || null });
+    changes.push({
+      identifier: String(issue.identifier || issue.id),
+      from: prev,
+      to: next,
+    });
+  }
+  return changes;
 }
 
 module.exports = {
@@ -341,4 +413,6 @@ module.exports = {
   buildReportSummary,
   resolveComposerIdForIssue,
   composerHasTranscript,
+  threadBelongsToIssue,
+  repairIssueThreadBindings,
 };

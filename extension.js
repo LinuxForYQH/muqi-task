@@ -22,7 +22,13 @@ const {
   parseWorktreePaths,
   serializeWorktreePaths,
 } = require("./git-worktree");
-const { syncIssueComposerChat, resolveComposerIdForIssue, composerHasTranscript } = require("./composer-sync");
+const {
+  syncIssueComposerChat,
+  resolveComposerIdForIssue,
+  composerHasTranscript,
+  threadBelongsToIssue,
+  repairIssueThreadBindings,
+} = require("./composer-sync");
 const { readClipboardImage } = require("./clipboard-image");
 const {
   getSyncConfig,
@@ -158,6 +164,15 @@ async function activate(context) {
   fs.mkdirSync(attachmentsRootUri.fsPath, { recursive: true });
   storePromise = createStore(context.globalStorageUri);
   store = await storePromise;
+
+  try {
+    const repaired = repairIssueThreadBindings(store);
+    for (const change of repaired) {
+      if (change.to) void syncChatForIssue(change.identifier, { quiet: true });
+    }
+  } catch {
+    // ignore startup rebind errors
+  }
 
   try {
     runtimeConfig = installRuntime(context, store.dbPath, {
@@ -1721,9 +1736,13 @@ async function openNewComposerWithPrompt(prompt, options = {}) {
       : typeof created === "string"
         ? created
         : null;
-  const newlySelected = afterIds.find((item) => !beforeIds.includes(item)) || null;
-  // Prefer create result, then newly appeared selection — never reuse the previous chat id.
-  const composerId = fromResult || newlySelected || null;
+  const newlySelected =
+    afterIds.find((item) => isResumableComposerId(item) && !beforeIds.includes(item)) || null;
+  // Never reuse a composer that was already selected before createNew.
+  const composerId =
+    fromResult && isResumableComposerId(fromResult) && !beforeIds.includes(fromResult)
+      ? fromResult
+      : newlySelected;
   if (composerId && title) {
     await syncComposerChatTitle(composerId, title);
   }
@@ -1745,6 +1764,53 @@ async function ensureRuntimeReady(dbPath) {
     dbPath,
     { attachmentsRoot: attachmentsRootUri?.fsPath },
   );
+}
+
+/**
+ * Thread IDs already bound to other issues.
+ * @param {{ listIssues: Function }} db
+ * @param {string} [exceptIssueId]
+ * @returns {Set<string>}
+ */
+function occupiedThreadIds(db, exceptIssueId) {
+  const occupied = new Set();
+  if (typeof db.listIssues !== "function") return occupied;
+  for (const item of db.listIssues()) {
+    if (exceptIssueId && item.id === exceptIssueId) continue;
+    const tid = String(item.threadId || "").trim();
+    if (!tid) continue;
+    // 只有「确实属于对方」或「尚无 transcript 的空草稿」才视为占用。
+    if (threadBelongsToIssue(tid, item.identifier, item.title) || !composerHasTranscript(tid)) {
+      occupied.add(tid);
+    }
+  }
+  return occupied;
+}
+
+/**
+ * Bind a composer UUID to an issue. Refuses IDs already owned by another issue
+ * whose transcript actually belongs to them. Clears a stolen binding on the other issue.
+ * @returns {boolean} true if the stored threadId changed
+ */
+function bindIssueComposer(db, issue, composerId) {
+  const id = String(composerId || "").trim();
+  if (!issue || !isResumableComposerId(id)) return false;
+  if (String(issue.threadId || "").trim() === id) return false;
+  const owner =
+    typeof db.listIssues === "function"
+      ? db.listIssues().find(
+          (item) => item.id !== issue.id && String(item.threadId || "").trim() === id,
+        )
+      : null;
+  if (owner && threadBelongsToIssue(id, owner.identifier, owner.title)) {
+    return false;
+  }
+  if (owner) {
+    db.updateIssue(owner.id, { threadId: null });
+  }
+  db.updateIssue(issue.id, { threadId: id });
+  issue.threadId = id;
+  return true;
 }
 
 /**
@@ -1799,23 +1865,29 @@ async function openNativeChat(taskId, options = {}) {
   const boundThreadId =
     preferredThreadId ||
     (isResumableComposerId(issue?.threadId) ? String(issue.threadId).trim() : "");
+  const occupied = issue ? occupiedThreadIds(db, issue.id) : new Set();
   const resolvedThreadId = issue
-    ? resolveComposerIdForIssue({
-        threadId: boundThreadId || issue.threadId,
-        identifier: issue.identifier,
-        title: issue.title,
-      })
+    ? resolveComposerIdForIssue(
+        {
+          threadId: boundThreadId || issue.threadId,
+          identifier: issue.identifier,
+          title: issue.title,
+        },
+        { occupiedThreadIds: occupied },
+      )
     : boundThreadId;
   const existingThreadId = isResumableComposerId(resolvedThreadId)
     ? String(resolvedThreadId).trim()
-    : boundThreadId;
-  if (
-    issue &&
-    existingThreadId &&
-    existingThreadId !== String(issue.threadId || "").trim()
-  ) {
-    db.updateIssue(issue.id, { threadId: existingThreadId });
-    issue.threadId = existingThreadId;
+    : boundThreadId && !occupied.has(boundThreadId)
+      ? boundThreadId
+      : "";
+  if (issue && existingThreadId) {
+    if (bindIssueComposer(db, issue, existingThreadId)) {
+      await pushSnapshot();
+    }
+  } else if (issue && occupied.has(String(issue.threadId || "").trim())) {
+    db.updateIssue(issue.id, { threadId: null });
+    issue.threadId = null;
     await pushSnapshot();
   }
   const forceNew = options.preferExisting === false;
@@ -1880,8 +1952,11 @@ async function openNativeChat(taskId, options = {}) {
       void vscode.window.showWarningMessage(
         "已打开输入框，但未改绑原会话（避免空草稿覆盖已有对话）。",
       );
+    } else if (!bindIssueComposer(db, issue, composerId)) {
+      void vscode.window.showWarningMessage(
+        "已打开对话，但该会话已绑定到其他议题，未改绑。",
+      );
     } else {
-      db.updateIssue(issue.id, { threadId: composerId });
       await pushSnapshot();
     }
   } else {

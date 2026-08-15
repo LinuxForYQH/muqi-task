@@ -1909,6 +1909,7 @@ async function createStore(globalStorageUri) {
     dbPath,
     getSnapshot,
     getIssue,
+    listIssues,
     listProjects,
     getProject,
     createProject,
