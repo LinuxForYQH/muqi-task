@@ -1815,6 +1815,29 @@
     });
   }
 
+  const PREFERRED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"]);
+
+  /**
+   * @param {File[]} images
+   * @returns {File[]}
+   */
+  function dedupeClipboardImages(images) {
+    if (images.length <= 1) return images;
+    const hasPreferred = images.some((file) => PREFERRED_IMAGE_TYPES.has(file.type));
+    const filtered = hasPreferred
+      ? images.filter((file) => file.type !== "image/tiff" && file.type !== "image/tif")
+      : images;
+    /** @type {Map<string, File>} */
+    const unique = new Map();
+    for (const file of filtered) {
+      // Ignore lastModified: DataTransferItem.getAsFile() stamps a new time, so
+      // the same screenshot also appearing in data.files would look like a second file.
+      const key = `${file.type}:${file.size}:${file.name}`;
+      if (!unique.has(key)) unique.set(key, file);
+    }
+    return [...unique.values()];
+  }
+
   /**
    * @param {DataTransfer | null | undefined} data
    * @returns {File[]}
@@ -1827,22 +1850,28 @@
     const pushFile = (file) => {
       if (!(file instanceof File)) return;
       if (!file.type || !file.type.startsWith("image/")) return;
-      const key = `${file.name}:${file.size}:${file.lastModified}:${file.type}`;
+      const key = `${file.type}:${file.size}:${file.name}`;
       if (seen.has(key)) return;
       seen.add(key);
       images.push(file);
     };
+    let fromItems = 0;
     if (data.items?.length) {
       for (const item of data.items) {
+        if (item.kind && item.kind !== "file") continue;
         if (!item.type || !item.type.startsWith("image/")) continue;
         const file = item.getAsFile();
-        if (file) pushFile(file);
+        if (file) {
+          pushFile(file);
+          fromItems += 1;
+        }
       }
     }
-    if (data.files?.length) {
+    // items and files are the same screenshot on paste; only use files as fallback.
+    if (!fromItems && data.files?.length) {
       for (const file of data.files) pushFile(file);
     }
-    return images;
+    return dedupeClipboardImages(images);
   }
 
   /**
@@ -1954,6 +1983,8 @@
     textarea.setSelectionRange(caret, caret);
   }
 
+  let commentPasteInFlight = false;
+
   /**
    * Paste images into the comment composer.
    * Webview clipboardData often lacks image/* — fall back to Async Clipboard API,
@@ -1965,34 +1996,37 @@
     if (input instanceof HTMLTextAreaElement) state.commentDraft = input.value;
 
     const fromEvent = collectImageFilesFromDataTransfer(event.clipboardData);
-    if (fromEvent.length) {
-      event.preventDefault();
-      await addPendingCommentImages(fromEvent);
-      return;
-    }
-
     const pastedText = event.clipboardData?.getData("text/plain") || "";
-    // Take over paste so we can probe image sources without losing text fallback.
     event.preventDefault();
+    if (commentPasteInFlight) return;
+    commentPasteInFlight = true;
+    try {
+      if (fromEvent.length) {
+        await addPendingCommentImages(fromEvent);
+        return;
+      }
 
-    const navImage = await readNavigatorClipboardImage();
-    if (navImage && pushPendingCommentImage(navImage)) {
-      state.focusCommentInput = true;
-      render();
-      return;
-    }
+      const navImage = await readNavigatorClipboardImage();
+      if (navImage && pushPendingCommentImage(navImage)) {
+        state.focusCommentInput = true;
+        render();
+        return;
+      }
 
-    const hostImage = await readHostClipboardImage();
-    if (hostImage && pushPendingCommentImage(hostImage)) {
-      state.focusCommentInput = true;
-      render();
-      return;
-    }
+      const hostImage = await readHostClipboardImage();
+      if (hostImage && pushPendingCommentImage(hostImage)) {
+        state.focusCommentInput = true;
+        render();
+        return;
+      }
 
-    if (input instanceof HTMLTextAreaElement) {
-      insertTextIntoTextarea(input, pastedText);
-    } else if (pastedText) {
-      state.commentDraft = `${state.commentDraft || ""}${pastedText}`;
+      if (input instanceof HTMLTextAreaElement) {
+        insertTextIntoTextarea(input, pastedText);
+      } else if (pastedText) {
+        state.commentDraft = `${state.commentDraft || ""}${pastedText}`;
+      }
+    } finally {
+      commentPasteInFlight = false;
     }
   }
 
@@ -2452,8 +2486,6 @@
     }
     state.selectedTaskId = taskId;
     vscode.postMessage({ type: "watchChatSync", taskId });
-    // 打开详情时同步右侧对话到左侧活动
-    void storeRequest("syncChat", { taskId, quiet: true }, { timeoutMs: 60000 }).catch(() => {});
     render();
   }
 
@@ -7484,9 +7516,6 @@
       state.editingDescription = false;
       state.projectMenuOpen = false;
       vscode.postMessage({ type: "watchChatSync", taskId: nextId });
-      if (nextId) {
-        void storeRequest("syncChat", { taskId: nextId, quiet: true }, { timeoutMs: 60000 }).catch(() => {});
-      }
       render();
       return;
     }

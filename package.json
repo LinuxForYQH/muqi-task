@@ -2,7 +2,7 @@
   "name": "muqi-task",
   "displayName": "Muqi Task",
   "description": "Muqi Task 任务看板，数据持久化到本机 SQLite。",
-  "version": "0.3.158",
+  "version": "0.3.160",
   "publisher": "local-test",
   "icon": "media/icon.png",
   "engines": {

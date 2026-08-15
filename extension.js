@@ -87,9 +87,9 @@ let runtimeConfig = null;
 
 /** @type {NodeJS.Timeout | null} */
 let chatSyncTimer = null;
-
 /** @type {string | null} */
 let chatSyncIssueId = null;
+let chatSyncInFlight = false;
 
 /** @type {NodeJS.Timeout | null} */
 let dbSyncTimer = null;
@@ -290,11 +290,17 @@ function watchChatSyncForIssue(issueId) {
     chatSyncTimer = null;
   }
   if (!id) return;
-  void syncChatForIssue(id, { quiet: true });
+  chatSyncInFlight = true;
+  void syncChatForIssue(id, { quiet: true }).finally(() => {
+    chatSyncInFlight = false;
+  });
   chatSyncTimer = setInterval(() => {
-    if (!chatSyncIssueId) return;
-    void syncChatForIssue(chatSyncIssueId, { quiet: true });
-  }, 12000);
+    if (!chatSyncIssueId || chatSyncInFlight) return;
+    chatSyncInFlight = true;
+    void syncChatForIssue(chatSyncIssueId, { quiet: true }).finally(() => {
+      chatSyncInFlight = false;
+    });
+  }, 30000);
 }
 
 /**

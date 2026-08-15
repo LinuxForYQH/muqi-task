@@ -6,6 +6,23 @@ const { promisify } = require("util");
 
 const execFileAsync = promisify(execFile);
 
+/** Serialize sqlite3 CLI access to Cursor's huge state.vscdb. */
+let stateDbQueue = Promise.resolve();
+
+/**
+ * @template T
+ * @param {() => Promise<T>} work
+ * @returns {Promise<T>}
+ */
+function enqueueStateDb(work) {
+  const run = stateDbQueue.then(work, work);
+  stateDbQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 /**
  * @returns {string}
  */
@@ -24,11 +41,11 @@ function cursorStateDbPath() {
  * @param {string} sql
  * @returns {Promise<string>}
  */
-async function sqliteQuery(dbPath, sql) {
+async function sqliteQuery(dbPath, sql, extraArgs = []) {
   const { stdout } = await execFileAsync(
     "sqlite3",
-    ["-readonly", `file:${dbPath}?mode=ro`, sql],
-    { maxBuffer: 32 * 1024 * 1024 },
+    ["-readonly", ...extraArgs, `file:${dbPath}?mode=ro`, sql],
+    { maxBuffer: 32 * 1024 * 1024, timeout: 8000 },
   );
   return String(stdout || "");
 }
@@ -38,6 +55,49 @@ async function sqliteQuery(dbPath, sql) {
  */
 function sqlQuote(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+/**
+ * Fetch bubble bodies by exact PK lookups. Never LIKE-scan cursorDiskKV —
+ * Cursor's state.vscdb is multi-GB and case-insensitive LIKE cannot use the key index.
+ * @param {string} dbPath
+ * @param {string} composerId
+ * @param {string[]} bubbleIds
+ * @returns {Promise<Map<string, string>>}
+ */
+async function readBubbleTextsById(dbPath, composerId, bubbleIds) {
+  /** @type {Map<string, string>} */
+  const bubbleTextById = new Map();
+  const ids = [...new Set(bubbleIds.map((item) => String(item || "").trim()).filter(Boolean))];
+  const chunkSize = 40;
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const keys = chunk.map((bubbleId) => sqlQuote(`bubbleId:${composerId}:${bubbleId}`));
+    let rows = [];
+    try {
+      const raw = await sqliteQuery(
+        dbPath,
+        `SELECT key, value FROM cursorDiskKV WHERE key IN (${keys.join(",")});`,
+        ["-json"],
+      );
+      rows = JSON.parse(String(raw || "[]").trim() || "[]");
+    } catch {
+      continue;
+    }
+    for (const row of rows) {
+      const key = String(row.key || "");
+      const bubbleId = key.split(":").slice(2).join(":");
+      if (!bubbleId) continue;
+      try {
+        const bubble = JSON.parse(String(row.value || "{}"));
+        const text = String(bubble?.text || "").trim();
+        if (text) bubbleTextById.set(bubbleId, text);
+      } catch {
+        // ignore
+      }
+    }
+  }
+  return bubbleTextById;
 }
 
 /**
@@ -51,79 +111,56 @@ async function readComposerMessages(composerId) {
   const dbPath = cursorStateDbPath();
   if (!fs.existsSync(dbPath)) return [];
 
-  let raw;
-  try {
-    raw = await sqliteQuery(
-      dbPath,
-      `SELECT value FROM cursorDiskKV WHERE key = ${sqlQuote(`composerData:${id}`)} LIMIT 1;`,
-    );
-  } catch {
-    return [];
-  }
-  const jsonText = raw.trim();
-  if (!jsonText) return [];
-
-  /** @type {any} */
-  let data;
-  try {
-    data = JSON.parse(jsonText);
-  } catch {
-    return [];
-  }
-
-  const headers = Array.isArray(data.fullConversationHeadersOnly)
-    ? data.fullConversationHeadersOnly
-    : Array.isArray(data.conversation)
-      ? data.conversation
-      : [];
-
-  /** @type {Map<string, string>} */
-  const bubbleTextById = new Map();
-  try {
-    const { stdout } = await execFileAsync(
-      "sqlite3",
-      [
-        "-readonly",
-        "-json",
-        `file:${dbPath}?mode=ro`,
-        `SELECT key, value FROM cursorDiskKV WHERE key LIKE ${sqlQuote(`bubbleId:${id}:%`)};`,
-      ],
-      { maxBuffer: 64 * 1024 * 1024 },
-    );
-    const rows = JSON.parse(String(stdout || "[]"));
-    for (const row of rows) {
-      const key = String(row.key || "");
-      const bubbleId = key.split(":").slice(2).join(":");
-      if (!bubbleId) continue;
-      try {
-        const bubble = JSON.parse(String(row.value || "{}"));
-        const text = String(bubble?.text || "").trim();
-        if (text) bubbleTextById.set(bubbleId, text);
-      } catch {
-        // ignore
-      }
+  return enqueueStateDb(async () => {
+    let raw;
+    try {
+      raw = await sqliteQuery(
+        dbPath,
+        `SELECT value FROM cursorDiskKV WHERE key = ${sqlQuote(`composerData:${id}`)} LIMIT 1;`,
+      );
+    } catch {
+      return [];
     }
-  } catch {
-    // preview-only fallback
-  }
+    const jsonText = raw.trim();
+    if (!jsonText) return [];
 
-  /** @type {Array<{ bubbleId: string, role: "user" | "assistant", text: string, createdAt: string }>} */
-  const messages = [];
-  for (const header of headers) {
-    const bubbleId = String(header?.bubbleId || "").trim();
-    if (!bubbleId) continue;
-    const grouping = header?.grouping && typeof header.grouping === "object" ? header.grouping : {};
-    const preview = String(grouping.textPreview || "").trim();
-    const body = bubbleTextById.get(bubbleId) || preview;
-    if (!body) continue;
-    messages.push({
-      bubbleId,
-      role: Number(header?.type) === 1 ? "user" : "assistant",
-      text: body,
-      createdAt: String(header?.createdAt || new Date().toISOString()),
-    });
-  }
-  return messages;
+    /** @type {any} */
+    let data;
+    try {
+      data = JSON.parse(jsonText);
+    } catch {
+      return [];
+    }
+
+    const headers = Array.isArray(data.fullConversationHeadersOnly)
+      ? data.fullConversationHeadersOnly
+      : Array.isArray(data.conversation)
+        ? data.conversation
+        : [];
+
+    const bubbleIds = headers
+      .map((header) => String(header?.bubbleId || "").trim())
+      .filter(Boolean);
+    const bubbleTextById = bubbleIds.length ? await readBubbleTextsById(dbPath, id, bubbleIds) : new Map();
+
+    /** @type {Array<{ bubbleId: string, role: "user" | "assistant", text: string, createdAt: string }>} */
+    const messages = [];
+    for (const header of headers) {
+      const bubbleId = String(header?.bubbleId || "").trim();
+      if (!bubbleId) continue;
+      const grouping = header?.grouping && typeof header.grouping === "object" ? header.grouping : {};
+      const preview = String(grouping.textPreview || "").trim();
+      const body = bubbleTextById.get(bubbleId) || preview;
+      if (!body) continue;
+      messages.push({
+        bubbleId,
+        role: Number(header?.type) === 1 ? "user" : "assistant",
+        text: body,
+        createdAt: String(header?.createdAt || new Date().toISOString()),
+      });
+    }
+    return messages;
+  });
 }
 
 /**
