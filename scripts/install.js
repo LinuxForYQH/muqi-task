@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
+const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const {
@@ -11,6 +12,17 @@ const {
 } = require("../remote-install");
 
 const ROOT = path.resolve(__dirname, "..");
+
+function ensureDeps() {
+  const marker = path.join(ROOT, "node_modules", "sql.js");
+  if (fs.existsSync(marker)) return;
+  const result = spawnSync("npm", ["install"], {
+    cwd: ROOT,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
+  if (result.status !== 0) process.exit(result.status || 1);
+}
 
 function parseArgs(argv) {
   /** @type {{ remote: boolean, host: string, vsix: string, pack: boolean }} */
@@ -33,7 +45,8 @@ function parseArgs(argv) {
 }
 
 function ensureVsix(pack) {
-  if (pack) {
+  const existing = findLatestVsix(ROOT);
+  if (pack || !existing) {
     const result = spawnSync(process.execPath, [path.join(ROOT, "scripts", "package.js")], {
       cwd: ROOT,
       stdio: "inherit",
@@ -49,6 +62,7 @@ function ensureVsix(pack) {
 }
 
 const args = parseArgs(process.argv.slice(2));
+ensureDeps();
 const vsix = args.vsix || ensureVsix(args.pack);
 console.log(`VSIX: ${vsix}`);
 

@@ -86,6 +86,7 @@
   },
   "scripts": {
     "package": "node scripts/package.js",
+    "install:local": "node scripts/install.js --package",
     "install:vsix": "node scripts/install.js",
     "install:remote": "node scripts/install.js --remote"
   },
