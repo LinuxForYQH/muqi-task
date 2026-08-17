@@ -21,23 +21,23 @@
 
 左侧活动栏点 Muqi Task 图标打开 **TASK PANEL**。侧栏按状态列出议题，点一条会在右侧打开详情。
 
-![侧栏任务面板与议题详情](docs/screenshots/01-overview.png)
+![侧栏任务面板与议题详情](https://cdn.jsdelivr.net/gh/LinuxForYQH/muqi-task@main/docs/screenshots/01-overview.png)
 
 **项目管理**：把本地文件夹或 Git 仓库绑成项目。创建议题时会自动挂上开发上下文，也可以随时打开 Workspace。
 
-![项目管理](docs/screenshots/02-projects.png)
+![项目管理](https://cdn.jsdelivr.net/gh/LinuxForYQH/muqi-task@main/docs/screenshots/02-projects.png)
 
 议题绑定对话之后，点 **查看对话** 回到那条 Cursor 会话继续聊；也可以在下方评论，再同步处理。
 
-![查看对话，续写已有会话](docs/screenshots/03-conversation.png)
+![查看对话，续写已有会话](https://cdn.jsdelivr.net/gh/LinuxForYQH/muqi-task@main/docs/screenshots/03-conversation.png)
 
 **同步处理**会把当前评论发回已绑定会话。右侧 Agent 会按 skill 拉取最新议题属性与评论，并同步进度。
 
-![同步处理与 Agent 续写](docs/screenshots/04-sync-process.png)
+![同步处理与 Agent 续写](https://cdn.jsdelivr.net/gh/LinuxForYQH/muqi-task@main/docs/screenshots/04-sync-process.png)
 
 也可以先给多条议题写好评论，再打开 **自动化**，一次性打开对话并处理。
 
-![先评论，再批量拉起处理](docs/screenshots/05-automation.png)
+![先评论，再批量拉起处理](https://cdn.jsdelivr.net/gh/LinuxForYQH/muqi-task@main/docs/screenshots/05-automation.png)
 
 ## 安装
 
